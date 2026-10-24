@@ -1,0 +1,4 @@
+# rightbar-driver 补丁层：插到官方 bundle 之前，保证零件在官方服务员上班前装好
+- insert:
+    - id: rightbar-driver
+      name: '@local/rightbar-driver'
