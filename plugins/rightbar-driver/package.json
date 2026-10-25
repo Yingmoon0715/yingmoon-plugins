@@ -1,9 +1,9 @@
 {
   "name": "rightbar-driver",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": false,
   "type": "module",
-  "description": "Drive the built-in browser inside the DSH right sidebar (35 tools), and serve web_search from a self-hosted SearXNG so it keeps working without the paid official search.",
+  "description": "Drive the built-in browser inside the DSH right sidebar (35 tools), serve web_search from a self-hosted SearXNG (17 engines), and fetch pages through a mirror-fallback provider so blocked GitHub links still load.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Yingmoon0715/yingmoon-plugins.git",
