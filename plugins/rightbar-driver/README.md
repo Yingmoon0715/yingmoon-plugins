@@ -92,6 +92,31 @@ dsh plugin add github:Yingmoon0715/yingmoon-plugins#path:/plugins/rightbar-drive
 
 Or from the plugin market inside DSH.
 
+## It also replaces web search
+
+DeepSeek's official web search becomes pay-per-call on 1 November 2026. This plugin
+also registers itself as a DSH search provider (id `moon-local`), so `web_search`
+runs on your own sources instead of the metered official one.
+
+Three tiers, first success wins:
+
+1. **Self-hosted SearXNG** (recommended): reached over an SSH tunnel the plugin
+   opens on demand and reopens after a drop. Configuration lives in
+   `DSH_HOME/search-sources.json`.
+2. **Tavily**: only used when `tavilyKey` is set.
+3. **Real browser fallback**: opens Sogou, 360, then Bing in the sidebar browser and
+   scrapes real result links. Last resort — it does touch sidebar tabs.
+
+All three failing raises an error that names each tier's reason.
+
+One rule worth keeping: provider availability must be a cheap check, never a network
+probe on every call. The plugin keeps an in-memory ledger — after all three tiers
+fail it reports unavailable for a 60-second cooldown, so the harness stops routing
+searches into a dead end.
+
+Self-test: `/rightbar-api/search-test?q=term` runs through DSH's own `ctx.web.search`
+and reports `lastVia`, `lastCount`, `lastError`, and `downUntil`.
+
 ## Status
 
 35 tools. Verified end to end on DSH 0.2.1-rc.2 desktop: `open` returns `frames: 1`,
@@ -99,6 +124,10 @@ Or from the plugin market inside DSH.
 navigates for real, `shot` and `shot_full` write real screenshots, `info` / `health` /
 `tabs` / `ops` / `zoom` / `wait` / `find` / `a11y` / `captcha` / `controls` /
 `content` / `cookies` / `restrict` / `close` all exercised.
+
+Search is verified too: against the self-hosted SearXNG a CJK query returned five
+real results in 2.5 s; pointed at a dead port it failed in 3 ms and then reported
+unavailable, instead of stalling the whole call.
 
 Not yet in this release: nothing claimed beyond the list above. Known rough edges:
 `rightbar_scrape` field extraction returns empty values on some pages.
@@ -197,6 +226,29 @@ dsh plugin add github:Yingmoon0715/yingmoon-plugins#path:/plugins/rightbar-drive
 
 或在 DSH 内的插件市场安装。
 
+## 它还能顶替联网搜索
+
+DeepSeek 官方联网搜索从 2026 年 11 月 1 日起按次收费。这个插件同时把自己注册成
+DSH 的搜索提供方（ID 为 `moon-local`），于是 `web_search` 会走你自己的搜索源，
+不再消耗官方额度。
+
+三级回退，任何一层成功就返回：
+
+1. **自建 SearXNG**（推荐）：本机通过 SSH 隧道连自己的实例。隧道由插件按需自动
+   建立，断了下次重建。配置写在 `DSH_HOME/search-sources.json`。
+2. **Tavily**：只在配置了 `tavilyKey` 时才用。
+3. **右推栏真浏览器兜底**：依次打开搜狗、360、Bing，抓真实结果链接。
+   这是最后手段，它会动右推栏的标签页。
+
+三层全挂才报错，错误里逐条写清每一层为什么失败。
+
+一条纪律：提供方的「可用性」必须是廉价判断，不能每次搜索都去探网络。插件用内存
+记账——上一轮三层全挂之后进入 60 秒冷静期，冷静期内直接报不可用，不会让官方把
+搜索派过来白等。
+
+自测入口：`/rightbar-api/search-test?q=关键词`，它走 DSH 自己的 `ctx.web.search`，
+返回里带 `lastVia`、`lastCount`、`lastError`、`downUntil`，一眼看出走的是哪一层。
+
 ## 当前状态
 
 35 个工具。已在 DSH 0.2.1-rc.2 桌面版端到端验证：`open` 返回 `frames: 1`；
@@ -204,6 +256,9 @@ dsh plugin add github:Yingmoon0715/yingmoon-plugins#path:/plugins/rightbar-drive
 `shot` 与 `shot_full` 写出真实截图；`info`、`health`、`tabs`、`ops`、`zoom`、
 `wait`、`find`、`a11y`、`captcha`、`controls`、`content`、`cookies`、`restrict`、
 `close` 均已实调通过。
+
+搜索侧同样验过：接自建 SearXNG 时中文查询 2.5 秒返回 5 条真实结果；
+把地址指向死端口时 3 毫秒失败、随后 `available()` 转为不可用，不再拖死一轮。
 
 未做的：不声明清单以外的能力。已知瑕疵：`rightbar_scrape` 在部分页面上
 提取到的字段值为空。

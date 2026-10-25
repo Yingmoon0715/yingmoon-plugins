@@ -1,27 +1,41 @@
 {
-  "name": "@local/rightbar-driver",
-  "version": "1.0.0",
-  "private": true,
+  "name": "rightbar-driver",
+  "version": "1.1.0",
+  "private": false,
   "type": "module",
-  "description": "Drive the built-in browser inside the DSH right sidebar: open, navigate, read, click, fill, close.",
+  "description": "Drive the built-in browser inside the DSH right sidebar (35 tools), and serve web_search from a self-hosted SearXNG so it keeps working without the paid official search.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yingmoon/rightbar-driver.git"
+    "url": "git+https://github.com/Yingmoon0715/yingmoon-plugins.git",
+    "directory": "plugins/rightbar-driver"
   },
-  "homepage": "https://github.com/yingmoon/rightbar-driver",
+  "homepage": "https://github.com/Yingmoon0715/yingmoon-plugins/tree/main/plugins/rightbar-driver",
   "license": "MIT",
-  "exports": { ".": "./index.js", "./client": "./client.js" },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "README.md"],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0-0 <5.0.0-0",
     "@deepseek-ai/schemastery": ">=3.0.0-0 <4.0.0-0"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-ui-sidebar-right"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
     }
   }
 }
