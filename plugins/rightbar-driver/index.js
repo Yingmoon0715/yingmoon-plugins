@@ -33,6 +33,8 @@ try {
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { connect as netConnect } from 'node:net';
 
 const DSH_BASE = process.env.DSH_HOME || join(homedir(), '.dsh');
 const SHOT_DIR = join(DSH_BASE, 'rightbar-shots');
@@ -192,8 +194,237 @@ function writeCookieStore(store) {
   writeFileSync(COOKIE_FILE, JSON.stringify(store, null, 2));
 }
 
+/**
+ * 联网搜索。
+ * 官方搜索从 2026-11-01 起按次收费，这里把 ctx.web 的搜索提供方换成我们自己的：
+ * 先问自建 SearXNG（腾讯云 127.0.0.1:8888，本机经 SSH 隧道访问），
+ * 再问 Tavily（有密钥才用），最后用右推栏真浏览器兜底。
+ * 三层都不通才报错，错误里会写清每一层为什么失败。
+ */
+const SEARCH_CONFIG_FILE = join(DSH_BASE, 'search-sources.json');
+const DEFAULT_SEARCH_CONFIG = {
+  searxng: {
+    url: 'http://127.0.0.1:18888',
+    tunnel: { host: '124.221.10.56', user: 'ubuntu', localPort: 18888, remotePort: 8888 },
+  },
+  tavilyKey: '',
+  browserFallback: true,
+};
+
+function readSearchConfig() {
+  try {
+    if (!existsSync(SEARCH_CONFIG_FILE)) {
+      mkdirSync(DSH_BASE, { recursive: true });
+      writeFileSync(SEARCH_CONFIG_FILE, JSON.stringify(DEFAULT_SEARCH_CONFIG, null, 2));
+      return DEFAULT_SEARCH_CONFIG;
+    }
+    const raw = JSON.parse(readFileSync(SEARCH_CONFIG_FILE, 'utf8'));
+    return {
+      ...DEFAULT_SEARCH_CONFIG,
+      ...(raw && typeof raw === 'object' ? raw : {}),
+      searxng: { ...DEFAULT_SEARCH_CONFIG.searxng, ...((raw && raw.searxng) || {}) },
+    };
+  } catch { return DEFAULT_SEARCH_CONFIG; }
+}
+
+function portOpen(port, host = '127.0.0.1', timeout = 500) {
+  return new Promise((resolve) => {
+    const socket = netConnect({ port, host });
+    const finish = (value) => { socket.destroy(); resolve(value); };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+let tunnelChild = null;
+
+/** 本机到服务器的加密隧道：只有本地端口，不开任何公网入口。 */
+async function ensureTunnel(cfg) {
+  const tunnel = cfg.searxng && cfg.searxng.tunnel;
+  let port = 80;
+  try { port = Number(new URL(cfg.searxng.url).port || (new URL(cfg.searxng.url).protocol === 'https:' ? 443 : 80)); } catch { return false; }
+  if (await portOpen(port)) return true;
+  if (!tunnel || !tunnel.host) return false;
+  const sshExe = join(process.env.WINDIR || 'C:\\Windows', 'System32', 'OpenSSH', 'ssh.exe');
+  const args = [
+    '-N',
+    '-L', `127.0.0.1:${port}:127.0.0.1:${tunnel.remotePort}`,
+    '-o', 'BatchMode=yes',
+    '-o', 'ExitOnForwardFailure=yes',
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=3',
+    `${tunnel.user}@${tunnel.host}`,
+  ];
+  try {
+    tunnelChild = spawn(sshExe, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    tunnelChild.unref();
+  } catch { return false; }
+  const started = Date.now();
+  // 等隧道最多 6 秒。原来 12 秒，加上取数 20 秒，最坏要 32 秒才回退，
+  // 一次搜索把工具调用拖死；压到 6 秒后最坏 14 秒就能落到下一层。
+  while (Date.now() - started < 6000) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    if (await portOpen(port)) return true;
+  }
+  return false;
+}
+
+async function fetchJsonWithTimeout(url, options, timeoutMs, outerSignal) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  if (outerSignal) {
+    if (outerSignal.aborted) controller.abort();
+    else outerSignal.addEventListener('abort', onAbort, { once: true });
+  }
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+    if (outerSignal) outerSignal.removeEventListener('abort', onAbort);
+  }
+}
+
+function searchLimit(request) {
+  const wanted = request && Number(request.maxResults);
+  return Number.isFinite(wanted) && wanted > 0 ? Math.min(Math.round(wanted), 20) : 8;
+}
+
+async function searxngSearch(cfg, request, signal) {
+  const up = await ensureTunnel(cfg);
+  if (!up) throw new Error('隧道没通，本地端口没有监听');
+  const url = new URL(String(cfg.searxng.url).replace(/\/$/, '') + '/search');
+  url.searchParams.set('q', String((request && request.query) || ''));
+  url.searchParams.set('format', 'json');
+  url.searchParams.set('language', 'zh-CN');
+  const data = await fetchJsonWithTimeout(url.toString(), { headers: { accept: 'application/json' } }, 8000, signal);
+  const raw = Array.isArray(data.results) ? data.results : [];
+  const limit = searchLimit(request);
+  const seen = new Set();
+  const sources = [];
+  for (const item of raw) {
+    if (!item || typeof item.url !== 'string' || item.url === '' || seen.has(item.url)) continue;
+    seen.add(item.url);
+    const one = { url: item.url };
+    if (typeof item.title === 'string' && item.title !== '') one.title = item.title;
+    if (typeof item.content === 'string' && item.content !== '') one.snippet = item.content.slice(0, 300);
+    if (typeof item.publishedDate === 'string' && item.publishedDate !== '') one.publishedAt = item.publishedDate;
+    sources.push(one);
+    if (sources.length >= limit) break;
+  }
+  return { sources, truncated: raw.length > sources.length };
+}
+
+async function tavilySearch(cfg, request, signal) {
+  const limit = searchLimit(request);
+  const body = {
+    api_key: cfg.tavilyKey,
+    query: String((request && request.query) || ''),
+    max_results: limit,
+    search_depth: 'basic',
+  };
+  const data = await fetchJsonWithTimeout('https://api.tavily.com/search', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + cfg.tavilyKey },
+    body: JSON.stringify(body),
+  }, 20000, signal);
+  const raw = Array.isArray(data.results) ? data.results : [];
+  const sources = raw.filter((r) => r && typeof r.url === 'string' && r.url !== '').slice(0, limit).map((r) => {
+    const one = { url: r.url };
+    if (r.title) one.title = String(r.title);
+    if (r.content) one.snippet = String(r.content).slice(0, 300);
+    return one;
+  });
+  return { sources, truncated: raw.length > sources.length };
+}
+
+/** 官方 ctx.web 的搜索提供方：id + available() + search()。 */
+const SEARCH_PROVIDER_STATE = { registered: false, id: 'moon-local', error: null };
+
+/**
+ * 搜索健康记账。只放内存，不落盘。
+ * available() 靠它做"廉价局部判断"：官方文档明确要求可用性检查不发起网络调用，
+ * 所以这里不探端口，只读上一轮搜索的结果，失败后进入冷静期。
+ */
+const SEARCH_HEALTH = { downUntil: 0, cooldownMs: 60000, lastError: '', lastOkAt: 0, lastFailAt: 0 };
+
+function markSearchOk() {
+  SEARCH_HEALTH.downUntil = 0;
+  SEARCH_HEALTH.lastError = '';
+  SEARCH_HEALTH.lastOkAt = Date.now();
+}
+
+function markSearchDown(reason) {
+  SEARCH_HEALTH.downUntil = Date.now() + SEARCH_HEALTH.cooldownMs;
+  SEARCH_HEALTH.lastError = String(reason || '').slice(0, 300);
+  SEARCH_HEALTH.lastFailAt = Date.now();
+}
+
+class MoonSearchProvider {
+  id = 'moon-local';
+  constructor(dispatch) { this.dispatch = dispatch; }
+  available() {
+    SEARCH_PROVIDER_STATE.availableCalls = (SEARCH_PROVIDER_STATE.availableCalls || 0) + 1;
+    SEARCH_PROVIDER_STATE.downUntil = SEARCH_HEALTH.downUntil;
+    SEARCH_PROVIDER_STATE.lastError = SEARCH_HEALTH.lastError;
+    // 上一轮三层全挂之后的冷静期内报不可用，官方会立刻报
+    // WEB_PROVIDER_UNAVAILABLE 或改选别的提供方，不会把搜索派过来白等。
+    return Date.now() >= SEARCH_HEALTH.downUntil;
+  }
+  async search(request, signal) {
+    SEARCH_PROVIDER_STATE.searchCalls = (SEARCH_PROVIDER_STATE.searchCalls || 0) + 1;
+    SEARCH_PROVIDER_STATE.lastQuery = String((request && request.query) || '');
+    const cfg = readSearchConfig();
+    const notes = [];
+    try {
+      const found = await searxngSearch(cfg, request, signal);
+      if (found.sources.length > 0) {
+        SEARCH_PROVIDER_STATE.lastVia = 'searxng';
+        SEARCH_PROVIDER_STATE.lastCount = found.sources.length;
+        markSearchOk();
+        return found;
+      }
+      notes.push('自建搜索没有结果');
+    } catch (e) { notes.push('自建搜索失败: ' + String((e && e.message) || e)); }
+    if (cfg.tavilyKey) {
+      try {
+        const found = await tavilySearch(cfg, request, signal);
+        if (found.sources.length > 0) {
+          SEARCH_PROVIDER_STATE.lastVia = 'tavily';
+          SEARCH_PROVIDER_STATE.lastCount = found.sources.length;
+          markSearchOk();
+          return found;
+        }
+        notes.push('Tavily 没有结果');
+      } catch (e) { notes.push('Tavily 失败: ' + String((e && e.message) || e)); }
+    } else {
+      notes.push('没有配置 Tavily 密钥');
+    }
+    if (cfg.browserFallback !== false) {
+      try {
+        const found = await this.dispatch({ action: 'searchweb', query: String((request && request.query) || ''), limit: searchLimit(request) }, 45000);
+        if (found && Array.isArray(found.sources) && found.sources.length > 0) {
+          SEARCH_PROVIDER_STATE.lastVia = 'browser';
+          SEARCH_PROVIDER_STATE.lastCount = found.sources.length;
+          markSearchOk();
+          return { sources: found.sources, truncated: found.truncated === true };
+        }
+        notes.push('浏览器兜底没有结果: ' + ((found && found.error) || '未知原因'));
+      } catch (e) { notes.push('浏览器兜底失败: ' + String((e && e.message) || e)); }
+    }
+    SEARCH_PROVIDER_STATE.lastError = notes.join('；');
+    // 三层全挂：进冷静期，下一次 available() 直接报不可用，别让官方再派过来白等。
+    markSearchDown(notes.join('；'));
+    throw new Error('所有搜索源都不可用：' + notes.join('；'));
+  }
+}
+
 export const name = 'rightbar-driver';
-export const inject = ['webServer', 'tools', 'systemPrompt'];
+export const inject = ['webServer', 'tools', 'systemPrompt', 'web'];
 
 const CHANNEL = 'default';
 
@@ -256,6 +487,11 @@ export function apply(ctx) {
         historyLines: got.diag.lines,
         historyError: got.diag.error,
         historySample: got.entries.slice(0, 3),
+        searchProvider: SEARCH_PROVIDER_STATE,
+        searchConfig: (() => {
+          const cfg = readSearchConfig();
+          return { url: cfg.searxng.url, tavily: cfg.tavilyKey !== '', browserFallback: cfg.browserFallback !== false };
+        })(),
       });
     },
   }));
@@ -1088,6 +1324,44 @@ export function apply(ctx) {
   }));
 
   ctx.tools.register(defineTool({
+    name: 'rightbar_search_status',
+    description: '查联网搜索现在走哪条路：自建搜索端口通不通、隧道起没起、有没有配 Tavily 密钥、浏览器兜底开没开。搜索异常时先看这个，它会顺手把隧道拉起来。',
+    parameters: {},
+    output: textOut((v) => {
+      if (v && v.error) return '失败: ' + v.error;
+      const lines = [];
+      lines.push('自建搜索 ' + v.searxng.url + '：' + (v.searxng.open ? '端口通' : '端口不通'));
+      if (v.searxng.results >= 0) lines.push('试查返回 ' + v.searxng.results + ' 条');
+      if (v.searxng.error) lines.push('试查错误：' + v.searxng.error);
+      lines.push('Tavily：' + (v.tavily ? '已配置密钥' : '没有密钥（不影响，前两层够了）'));
+      lines.push('浏览器兜底：' + (v.browserFallback ? '已开启' : '已关闭'));
+      lines.push('配置文件：' + v.configFile);
+      return lines.join('\n');
+    }),
+    async execute() {
+      const cfg = readSearchConfig();
+      let port = 0;
+      try { port = Number(new URL(cfg.searxng.url).port || 80); } catch { port = 0; }
+      const open = port > 0 ? await portOpen(port) : false;
+      let results = -1;
+      let error;
+      if (port > 0) {
+        try {
+          const found = await searxngSearch(cfg, { query: 'ping', maxResults: 1 }, null);
+          results = found.sources.length;
+        } catch (e) { error = String((e && e.message) || e); }
+      }
+      return {
+        ok: true,
+        searxng: { url: cfg.searxng.url, port, open, results, error },
+        tavily: cfg.tavilyKey !== '',
+        browserFallback: cfg.browserFallback !== false,
+        configFile: SEARCH_CONFIG_FILE,
+      };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
     name: 'rightbar_close',
     description: '关闭右推栏内置浏览器的标签页。',
     parameters: {},
@@ -1095,10 +1369,40 @@ export function apply(ctx) {
     async execute() { return dispatch({ action: 'close' }); },
   }));
 
+  if (ctx.web !== undefined && typeof ctx.web.registerSearchProvider === 'function') {
+    try {
+      ctx.web.registerSearchProvider(new MoonSearchProvider(dispatch));
+      SEARCH_PROVIDER_STATE.registered = true;
+      console.log('[rightbar-driver] search provider registered');
+    } catch (e) {
+      SEARCH_PROVIDER_STATE.error = String((e && e.message) || e);
+      console.log('[rightbar-driver] search provider registration failed', SEARCH_PROVIDER_STATE.error);
+    }
+  } else {
+    SEARCH_PROVIDER_STATE.error = 'ctx.web.registerSearchProvider 不可用';
+  }
+
+  // 自测口：走 DSH 自己的搜索入口，验证提供方选择与三层回退是不是真的通。
+  if (ctx.web !== undefined && typeof ctx.web.search === 'function') {
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact', path: '/rightbar-api/search-test',
+      handler: async (req, res) => {
+        let query = 'test';
+        try { query = new URL(req.url, 'http://127.0.0.1').searchParams.get('q') || query; } catch { /* 用默认词 */ }
+        try {
+          const result = await ctx.web.search({ query, maxResults: 3 }, AbortSignal.timeout(25000));
+          sendJson(res, 200, { ok: true, query, sources: result.sources, truncated: result.truncated, provider: SEARCH_PROVIDER_STATE });
+        } catch (e) {
+          sendJson(res, 200, { ok: false, query, error: String((e && e.message) || e), provider: SEARCH_PROVIDER_STATE });
+        }
+      },
+    }));
+  }
+
   ctx.systemPrompt.section({
     name: 'rightbar-driver',
     order: -997,
-    text: () => '右推栏内置浏览器驱动（rightbar_* 工具）。打开与导航：rightbar_open 在右推栏打开官方内置浏览器并可带网址；rightbar_navigate 导航；rightbar_nav 前进后退刷新；rightbar_history 查以前打开过哪些网页（跨会话可查）；rightbar_tabs 列出、切换、关闭标签页。观察：rightbar_read 读页面文本与可交互元素（ref 同一次 read 内有效，页面变化后重新 read）；rightbar_a11y 读无障碍树，语义角色+名称+状态，更省上下文；rightbar_controls 列表单控件的当前值与 ref；rightbar_captcha 探测验证码位置与类型；rightbar_info 报告地址、标题、加载状态、滚动位置；rightbar_shot 截图存盘并返回路径（桌面版可用，可用 read_image 查看）；rightbar_shot_full 整页截图，从顶到底一张图；rightbar_health 查崩溃、加载、静音状况。操作：rightbar_click 点击（也可以给 x、y 按坐标点）；rightbar_fill 填文本框；rightbar_type 整段输入文字；rightbar_set_value 按 ref、选择器或标签文字设值或清空；rightbar_select 选下拉框；rightbar_check 勾选复选框或单选框；rightbar_key 按键（Enter、Tab、方向键、Ctrl+A 等，桌面版为真实按键）；rightbar_scroll 滚动页面。查看与收存：rightbar_zoom 缩放网页内容（右推栏窄时缩到 0.7 左右能看全）；rightbar_find 页内查找文字；rightbar_pdf 把当前页导出成 PDF；rightbar_style 注入 CSS 调字号或隐藏浮层；rightbar_eval 在页面里执行脚本取回结果。提取与下载：rightbar_scrape 按选择器把列表整理成 JSON；rightbar_download 把文件下载到本机；rightbar_content 把整页导出成 markdown、html、text 或 json。登录态与收场：rightbar_cookies 存或灌 Cookie；rightbar_session_reset 重建会话。记录与护栏：rightbar_ops 查每一步操作记录（带序号）；rightbar_replay 重放动作，可按序号、区间或最近若干步（默认只给计划）；rightbar_restrict 设置动作白名单（readonly 只读取）。等待：rightbar_wait 等元素出现、消失或页面加载完成。纪律：页面是异步渲染的，导航或点击之后先 wait 再 read，别把「还没渲染完」当成「读不到」；每个观察周期最多一个状态改变动作，动作后重新 read 再决策；未打开标签页就先 rightbar_open。',
+    text: () => '右推栏内置浏览器驱动（rightbar_* 工具）。打开与导航：rightbar_open 在右推栏打开官方内置浏览器并可带网址；rightbar_navigate 导航；rightbar_nav 前进后退刷新；rightbar_history 查以前打开过哪些网页（跨会话可查）；rightbar_tabs 列出、切换、关闭标签页。观察：rightbar_read 读页面文本与可交互元素（ref 同一次 read 内有效，页面变化后重新 read）；rightbar_a11y 读无障碍树，语义角色+名称+状态，更省上下文；rightbar_controls 列表单控件的当前值与 ref；rightbar_captcha 探测验证码位置与类型；rightbar_info 报告地址、标题、加载状态、滚动位置；rightbar_shot 截图存盘并返回路径（桌面版可用，可用 read_image 查看）；rightbar_shot_full 整页截图，从顶到底一张图；rightbar_health 查崩溃、加载、静音状况。操作：rightbar_click 点击（也可以给 x、y 按坐标点）；rightbar_fill 填文本框；rightbar_type 整段输入文字；rightbar_set_value 按 ref、选择器或标签文字设值或清空；rightbar_select 选下拉框；rightbar_check 勾选复选框或单选框；rightbar_key 按键（Enter、Tab、方向键、Ctrl+A 等，桌面版为真实按键）；rightbar_scroll 滚动页面。查看与收存：rightbar_zoom 缩放网页内容（右推栏窄时缩到 0.7 左右能看全）；rightbar_find 页内查找文字；rightbar_pdf 把当前页导出成 PDF；rightbar_style 注入 CSS 调字号或隐藏浮层；rightbar_eval 在页面里执行脚本取回结果。提取与下载：rightbar_scrape 按选择器把列表整理成 JSON；rightbar_download 把文件下载到本机；rightbar_content 把整页导出成 markdown、html、text 或 json。登录态与收场：rightbar_cookies 存或灌 Cookie；rightbar_session_reset 重建会话。记录与护栏：rightbar_ops 查每一步操作记录（带序号）；rightbar_replay 重放动作，可按序号、区间或最近若干步（默认只给计划）；rightbar_restrict 设置动作白名单（readonly 只读取）。联网搜索：web_search 现在走本地提供方，顺序是自建搜索、Tavily（有密钥才用）、右推栏真浏览器兜底，不经过官方收费接口；排查用 rightbar_search_status。等待：rightbar_wait 等元素出现、消失或页面加载完成。纪律：页面是异步渲染的，导航或点击之后先 wait 再 read，别把「还没渲染完」当成「读不到」；每个观察周期最多一个状态改变动作，动作后重新 read 再决策；未打开标签页就先 rightbar_open。',
     interpolate: false,
   });
 }
