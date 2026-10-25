@@ -1368,6 +1368,48 @@ window.__ModuleLoader__.load({
       return runInFrame(picked.frame, script);
     }
 
+    /**
+     * 浏览器兜底搜索。
+     * 自建搜索与接口都不可用时，用右推栏里的真浏览器打开搜索页，把结果标题和链接读回来。
+     * 反爬拦不住真实浏览器；代价是慢，而且右推栏会亮一下。
+     */
+    async function webSearchInBrowser(ctx, query, limit) {
+      const text = String(query || '').trim();
+      if (text === '') return { error: '搜索词是空的' };
+      const engines = [
+        (q) => 'https://www.sogou.com/web?query=' + encodeURIComponent(q),
+        (q) => 'https://www.so.com/s?q=' + encodeURIComponent(q),
+        (q) => 'https://www.bing.com/search?q=' + encodeURIComponent(q),
+      ];
+      const probe = '(() => Array.from(document.querySelectorAll("h3 a")).map((a) => ({ title: (a.innerText || "").trim(), url: a.href || "" })).filter((x) => x.title !== "" && /^https?:/.test(x.url)).slice(0, 30))()';
+      const want = typeof limit === 'number' && limit > 0 ? Math.min(limit, 20) : 8;
+      for (const build of engines) {
+        const target = build(text);
+        const opened = await openBrowserTab(ctx, target);
+        if (opened && opened.error) continue;
+        const started = Date.now();
+        let rows = [];
+        while (Date.now() - started < 10000) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          const picked = lastFrame();
+          if (picked.error) continue;
+          const got = await runInFrame(picked.frame, probe);
+          if (Array.isArray(got) && got.length >= 3) { rows = got; break; }
+        }
+        if (rows.length === 0) continue;
+        const seen = new Set();
+        const sources = [];
+        for (const row of rows) {
+          if (seen.has(row.url)) continue;
+          seen.add(row.url);
+          sources.push({ url: row.url, title: row.title });
+          if (sources.length >= want) break;
+        }
+        if (sources.length > 0) return { ok: true, sources, via: target, truncated: rows.length > sources.length };
+      }
+      return { error: '三个搜索引擎都没能取到结果（可能遇到验证页）' };
+    }
+
     /** 在页面里执行任意脚本。返回值原样带回，非 JSON 可序列化时退化为字符串。 */
     function evalInFrame(script) {
       const picked = lastFrame();
@@ -1479,6 +1521,7 @@ window.__ModuleLoader__.load({
                 case 'cookies': value = await cookiesInFrame(cmd.how, cmd.cookies); break;
                 case 'sessionreset': value = await sessionReset(ctx, cmd.url); break;
                 case 'content': value = await contentInFrame(cmd.format, cmd.maxChars); break;
+                case 'searchweb': value = await webSearchInBrowser(ctx, cmd.query, cmd.limit); break;
                 case 'tabs': value = await tabsAction(ctx, cmd.how, cmd.tabId); break;
                 case 'click': value = await actInFrame('click', cmd.ref); break;
                 case 'fill': value = await actInFrame('fill', cmd.ref, cmd.value); break;
