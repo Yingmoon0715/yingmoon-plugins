@@ -114,6 +114,38 @@ probe on every call. The plugin keeps an in-memory ledger — after all three ti
 fail it reports unavailable for a 60-second cooldown, so the harness stops routing
 searches into a dead end.
 
+## Fetch that goes around blocks
+
+Search is only half of it: a result you cannot open is not a result. This plugin also
+registers a fetch provider (`moon-fetch`) that keeps a mirror table and retries
+through it whenever the direct request fails or returns a non-2xx.
+
+- Covers `github.com`, `raw.githubusercontent.com`, `codeload.github.com`, and
+  `api.github.com` through `ghfast.top` / `gh-proxy.com`, with `kkgithub` and
+  `bgithub` as last resort.
+- Mirror order is measured, not guessed: on 2026-10-26 the first two returned 200,
+  `kkgithub` failed to connect, and `bgithub` returned 403 — so the working pair runs
+  first.
+- Charset is sniffed from the header and the first 4 KB before decoding, so GBK and
+  GB2312 Chinese pages do not come back garbled.
+- Errors name every address that was tried and why each one failed.
+
+Registering a second fetch provider makes the harness see more than one available
+provider, so pin it in the profile patch:
+
+```yaml
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: moon-local
+    fetchProvider: moon-fetch
+```
+
+Leave `fetchProvider: http` to keep the official fetcher.
+
+Self-test: `/rightbar-api/fetch-test?u=<url>` reports the final URL, status, length,
+and the first 300 characters.
+
 Self-test: `/rightbar-api/search-test?q=term` runs through DSH's own `ctx.web.search`
 and reports `lastVia`, `lastCount`, `lastError`, and `downUntil`.
 
@@ -248,6 +280,36 @@ DSH 的搜索提供方（ID 为 `moon-local`），于是 `web_search` 会走你�
 
 自测入口：`/rightbar-api/search-test?q=关键词`，它走 DSH 自己的 `ctx.web.search`，
 返回里带 `lastVia`、`lastCount`、`lastError`、`downUntil`，一眼看出走的是哪一层。
+
+## 抓取也能绕开封锁
+
+搜索只是一半——搜到了打不开，等于没搜到。这个插件同时注册了抓取提供方
+`moon-fetch`，内置镜像表，直连失败或返回非 2xx 时自动换镜像重试。
+
+覆盖 `github.com`、`raw.githubusercontent.com`、`codeload.github.com`、
+`api.github.com`，走 `ghfast.top` 与 `gh-proxy.com`，`kkgithub`、
+`bgithub` 作最后备用。
+
+镜像顺序是实测排出来的，不是猜的：2026-10-26 实测前两个返回 200，
+`kkgithub` 连接失败、`bgithub` 返回 403，所以能用的排前面。
+
+解码前会从响应头和前 4 KB 嗅探字符集，GBK、GB2312 的中文站不会变乱码。
+失败时错误里逐条写明试过哪些地址、每个为什么失败。
+
+注册第二个抓取提供方会让宿主看到多个可用提供方，所以要在 profile 补丁里固定：
+
+```yaml
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: moon-local
+    fetchProvider: moon-fetch
+```
+
+想用回官方抓取，把 `fetchProvider` 改回 `http` 即可。
+
+自测入口：`/rightbar-api/fetch-test?u=<网址>`，返回最终地址、状态、长度与开头
+300 字。
 
 ## 当前状态
 
