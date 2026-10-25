@@ -428,6 +428,153 @@ export const inject = ['webServer', 'tools', 'systemPrompt', 'web'];
 
 const CHANNEL = 'default';
 
+/* ============================================================================
+ * 多元抓取：把「多远下载」那套镜像兜底搬到 ctx.web 的抓取链路上。
+ * 直连打不开就自动换镜像，而不是直接报错。
+ * 镜像表沿用玥玥 dlx.py 里验证过的那几个。
+ * ==========================================================================*/
+
+/** GitHub 系镜像：把原 URL 拼成镜像 URL。
+ * 顺序按 2026-10-26 实测结果排：ghfast / gh-proxy 返回 200 可用，
+ * kkgithub 连接失败、bgithub 返回 403，所以放到最后作备用。 */
+const GITHUB_MIRRORS = [
+  (u) => 'https://ghfast.top/' + u,
+  (u) => 'https://gh-proxy.com/' + u,
+  (u) => u.replace('https://github.com/', 'https://kkgithub.com/'),
+  (u) => u.replace('https://github.com/', 'https://bgithub.xyz/'),
+];
+
+const RAW_MIRRORS = [
+  (u) => 'https://ghfast.top/' + u,
+  (u) => 'https://gh-proxy.com/' + u,
+  (u) => u.replace('https://raw.githubusercontent.com/', 'https://raw.kkgithub.com/'),
+];
+
+const CODELOAD_MIRRORS = [
+  (u) => 'https://ghfast.top/' + u,
+  (u) => 'https://gh-proxy.com/' + u,
+];
+
+/**
+ * 按域名给出镜像候选（不含原地址；原地址永远先试）。
+ * @param {string} url 原始地址
+ * @returns {string[]} 镜像地址列表，可能为空
+ */
+function mirrorCandidates(url) {
+  let u;
+  try { u = new URL(url); } catch { return []; }
+  const host = u.hostname.toLowerCase();
+  const makers = host === 'github.com' ? GITHUB_MIRRORS
+    : host === 'raw.githubusercontent.com' ? RAW_MIRRORS
+      : host === 'codeload.github.com' ? CODELOAD_MIRRORS
+        : host === 'api.github.com' ? [GITHUB_MIRRORS[0], GITHUB_MIRRORS[1]]
+          : null;
+  if (makers === null) return [];
+  const out = [];
+  for (const make of makers) {
+    try {
+      const candidate = make(url);
+      if (candidate !== url && !out.includes(candidate)) out.push(candidate);
+    } catch { /* 单个镜像拼不出来就跳过 */ }
+  }
+  return out;
+}
+
+/** 抓取健康记账，供 available() 做廉价判断。 */
+const FETCH_STATE = { registered: false, id: 'moon-fetch', lastVia: '', lastError: '', mirrorHits: 0, directHits: 0 };
+
+/**
+ * 从字节头部嗅探字符集。
+ * 中文站大量使用 GBK/GB2312，直接按 UTF-8 解会变乱码，
+ * 官方 http 提供方有这一步，这里必须对齐。
+ * @param {Uint8Array} bytes 响应字节
+ * @param {string} ctype content-type 头
+ * @returns {string} 可用的编码名
+ */
+function sniffCharset(bytes, ctype) {
+  const fromHeader = /charset=["']?([\w-]+)/i.exec(ctype || '');
+  if (fromHeader) return fromHeader[1].toLowerCase();
+  // 只在头部 4KB 里找 <meta charset=...> 或 http-equiv
+  const head = new TextDecoder('latin1').decode(bytes.subarray(0, Math.min(bytes.byteLength, 4096)));
+  const meta = /<meta[^>]+charset=["']?([\w-]+)/i.exec(head);
+  if (meta) return meta[1].toLowerCase();
+  const equiv = /content=["'][^"']*charset=([\w-]+)/i.exec(head);
+  if (equiv) return equiv[1].toLowerCase();
+  return 'utf-8';
+}
+
+/** 把响应体读成文本，带上限并做字符集转换。 */
+async function readTextCapped(res, maxBytes) {
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const truncated = bytes.byteLength > maxBytes;
+  const slice = truncated ? bytes.subarray(0, maxBytes) : bytes;
+  const charset = sniffCharset(slice, String(res.headers.get('content-type') || ''));
+  let text;
+  try {
+    text = new TextDecoder(charset === 'gb2312' ? 'gbk' : charset, { fatal: false }).decode(slice);
+  } catch {
+    text = new TextDecoder('utf-8', { fatal: false }).decode(slice);
+  }
+  return { text, truncated };
+}
+
+/**
+ * 带镜像兜底的抓取提供方。
+ * 与官方 http 提供方行为一致（直连优先），只在直连失败或非 2xx 时才换镜像。
+ */
+class MoonFetchProvider {
+  id = 'moon-fetch';
+  available() {
+    return true;
+  }
+  async fetch(request, signal) {
+    const original = String((request && request.url) || '');
+    if (original === '') throw new Error('抓取地址是空的');
+    const attempts = [original, ...mirrorCandidates(original)];
+    const notes = [];
+    for (let i = 0; i < attempts.length; i += 1) {
+      const url = attempts[i];
+      if (signal && signal.aborted) throw new Error('抓取被取消');
+      try {
+        const res = await fetch(url, {
+          redirect: 'follow',
+          headers: {
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+            accept: 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8,*/*;q=0.7',
+          },
+          ...(signal ? { signal } : {}),
+        });
+        if (!res.ok) {
+          notes.push(`${i === 0 ? '直连' : '镜像'} HTTP ${res.status}`);
+          try { await res.body?.cancel(); } catch { /* 取消失败不影响换下一个 */ }
+          continue;
+        }
+        const { text, truncated } = await readTextCapped(res, 5e6);
+        const ctype = String(res.headers.get('content-type') || '');
+        const kind = /html|xml/i.test(ctype) || /^\s*</.test(text.slice(0, 200)) ? 'html' : 'text';
+        if (i === 0) FETCH_STATE.directHits += 1;
+        else FETCH_STATE.mirrorHits += 1;
+        FETCH_STATE.lastVia = i === 0 ? 'direct' : 'mirror';
+        FETCH_STATE.lastError = '';
+        return {
+          url: res.url || url,
+          statusCode: res.status,
+          body: { kind, content: text },
+          truncated,
+        };
+      } catch (e) {
+        notes.push(`${i === 0 ? '直连' : '镜像'} ${String((e && e.message) || e).slice(0, 80)}`);
+      }
+    }
+    FETCH_STATE.lastError = notes.join('；');
+    const mirrorNote = mirrorCandidates(original).length === 0
+      ? '该域名没有配镜像'
+      : `已试 ${attempts.length} 个地址（含 ${attempts.length - 1} 个镜像）`;
+    throw new Error(`抓取失败：${mirrorNote}。逐项原因：${notes.join('；')}`);
+  }
+}
+
 export function apply(ctx) {
   const channels = new Map();
   const getChannel = (key) => {
@@ -1382,6 +1529,23 @@ export function apply(ctx) {
     SEARCH_PROVIDER_STATE.error = 'ctx.web.registerSearchProvider 不可用';
   }
 
+  // 多元抓取：注册带镜像兜底的抓取提供方。
+  // 注意：注册第二个抓取提供方会让官方出现「多个可用提供方」，
+  // 需要在 profile 的 cordis.patch.yml 里把 dsh-web 的 fetchProvider 固定成
+  // moon-fetch，否则 web_fetch 会报 WEB_PROVIDER_AMBIGUOUS。
+  if (ctx.web !== undefined && typeof ctx.web.registerFetchProvider === 'function') {
+    try {
+      ctx.web.registerFetchProvider(new MoonFetchProvider());
+      FETCH_STATE.registered = true;
+      console.log('[rightbar-driver] fetch provider registered');
+    } catch (e) {
+      FETCH_STATE.lastError = String((e && e.message) || e);
+      console.log('[rightbar-driver] fetch provider registration failed', FETCH_STATE.lastError);
+    }
+  } else {
+    FETCH_STATE.lastError = 'ctx.web.registerFetchProvider 不可用';
+  }
+
   // 自测口：走 DSH 自己的搜索入口，验证提供方选择与三层回退是不是真的通。
   if (ctx.web !== undefined && typeof ctx.web.search === 'function') {
     ctx.effect(() => ctx.webServer.register({
@@ -1394,6 +1558,33 @@ export function apply(ctx) {
           sendJson(res, 200, { ok: true, query, sources: result.sources, truncated: result.truncated, provider: SEARCH_PROVIDER_STATE });
         } catch (e) {
           sendJson(res, 200, { ok: false, query, error: String((e && e.message) || e), provider: SEARCH_PROVIDER_STATE });
+        }
+      },
+    }));
+  }
+
+  // 自测口：走 DSH 自己的抓取入口，验证镜像兜底是不是真的生效。
+  if (ctx.web !== undefined && typeof ctx.web.fetch === 'function') {
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact', path: '/rightbar-api/fetch-test',
+      handler: async (req, res) => {
+        let target = '';
+        try { target = new URL(req.url, 'http://127.0.0.1').searchParams.get('u') || ''; } catch { /* 下面会报空地址 */ }
+        try {
+          const got = await ctx.web.fetch({ url: target }, AbortSignal.timeout(30000));
+          sendJson(res, 200, {
+            ok: true,
+            requested: target,
+            finalUrl: got.url,
+            statusCode: got.statusCode,
+            kind: got.body && got.body.kind,
+            chars: got.body && got.body.content ? got.body.content.length : 0,
+            head: got.body && got.body.content ? got.body.content.slice(0, 300) : '',
+            truncated: got.truncated,
+            state: FETCH_STATE,
+          });
+        } catch (e) {
+          sendJson(res, 200, { ok: false, requested: target, error: String((e && e.message) || e), state: FETCH_STATE });
         }
       },
     }));
