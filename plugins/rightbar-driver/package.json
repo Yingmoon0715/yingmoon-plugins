@@ -1,7 +1,7 @@
 {
-  "name": "rightbar-driver",
+  "name": "@local/rightbar-driver",
   "version": "1.2.0",
-  "private": false,
+  "private": true,
   "type": "module",
   "description": "Drive the built-in browser inside the DSH right sidebar (35 tools), serve web_search from a self-hosted SearXNG (17 engines), and fetch pages through a mirror-fallback provider so blocked GitHub links still load.",
   "repository": {
