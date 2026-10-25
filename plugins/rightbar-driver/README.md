@@ -8,20 +8,60 @@ The DSH right sidebar ships a browser tab (Ctrl+T, the official `ui-sidebar-brow
 It renders pages fine, but nothing could operate it from the agent side — you had to
 click and type by hand.
 
-This plugin makes that browser operable. Six tools:
+This plugin makes that browser operable. 35 tools, grouped by what they do:
 
+**Open and navigate**
 - `rightbar_open` — open the sidebar browser tab, optionally with a URL
 - `rightbar_navigate` — navigate to a URL
-- `rightbar_read` — read the current page: URL, title, body text, and an interactive
-  element list carrying `dsh-ref-N` handles
-- `rightbar_click` — click an element by its `dsh-ref-N` handle or a CSS selector
-- `rightbar_fill` — type into an input by handle or selector
-- `rightbar_close` — close the tab
+- `rightbar_nav` — back, forward, reload
+- `rightbar_history` — what was opened before, persisted across sessions and restarts
+- `rightbar_tabs` — list, switch, close tabs
+
+**Observe**
+- `rightbar_read` — page text plus interactive elements carrying `dsh-ref-N` handles
+- `rightbar_a11y` — the accessibility tree: semantic roles, names, states. Cheaper on context
+- `rightbar_controls` — form controls with their current values and refs
+- `rightbar_captcha` — locate CAPTCHAs and say which kind
+- `rightbar_info` — address, title, load state, scroll position
+- `rightbar_shot` — screenshot to disk, returns the path
+- `rightbar_shot_full` — full-page screenshot, top to bottom in one image
+- `rightbar_health` — crash, loading, mute status
+
+**Operate**
+- `rightbar_click` — click by ref or selector, or by x/y coordinates
+- `rightbar_fill` — type into an input
+- `rightbar_type` — type text character by character
+- `rightbar_set_value` — set or clear by ref, selector, or label text
+- `rightbar_select` — pick from a dropdown
+- `rightbar_check` — tick or untick checkboxes and radios
+- `rightbar_key` — press keys (Enter, Tab, arrows, Ctrl+A — real key events on desktop)
+- `rightbar_scroll` — scroll the page
+
+**View and keep**
+- `rightbar_zoom` — engine-level zoom, not font size
+- `rightbar_find` — find text in the page
+- `rightbar_pdf` — export the current page to PDF
+- `rightbar_style` — inject CSS to change font size, hide overlays, go dark
+- `rightbar_eval` — run a script in the page and bring back the result
+
+**Extract and download**
+- `rightbar_scrape` — pull a list into JSON by CSS selector
+- `rightbar_download` — download a file to the host
+- `rightbar_content` — export the whole page as markdown, html, text, or json
+
+**Login state and teardown**
+- `rightbar_cookies` — save or restore cookies
+- `rightbar_session_reset` — rebuild the browser session
+
+**Record and guardrails**
+- `rightbar_ops` — every operation with sequence, time, duration, outcome
+- `rightbar_replay` — replay actions, by sequence, range, or last N
+- `rightbar_restrict` — whitelist actions (readonly mode)
 
 Opening and navigation go through the official public API
 `ctx.sidebarRight.openTab('browser', { params: { url } })`. Reading and interaction
 run inside the browser guest through the same channel the official desktop build
-uses. No extra process, no extra browser, no memory overhead, and nothing touches
+uses. No extra process, no second browser, no memory overhead, and nothing touches
 the browser you are already logged into.
 
 ## Why it exists
@@ -47,20 +87,21 @@ just want the agent to be able to use it.
 ## Install
 
 ```
-dsh plugin add https://github.com/<owner>/rightbar-driver
+dsh plugin add github:Yingmoon0715/yingmoon-plugins#path:/plugins/rightbar-driver
 ```
 
 Or from the plugin market inside DSH.
 
 ## Status
 
-First release. Six tools, verified end to end on DSH 0.2.1-rc.2 desktop:
-`open` returns `frames: 1`, `read` returns real page content, `navigate` changes the
-loaded URL, `click` navigates for real. Screenshots and roadmap (screenshot capture,
-settings surface, skill bundle) are in `screenshots.json` and the issue tracker.
+35 tools. Verified end to end on DSH 0.2.1-rc.2 desktop: `open` returns `frames: 1`,
+`read` returns real page content, `navigate` changes the loaded URL, `click`
+navigates for real, `shot` and `shot_full` write real screenshots, `info` / `health` /
+`tabs` / `ops` / `zoom` / `wait` / `find` / `a11y` / `captcha` / `controls` /
+`content` / `cookies` / `restrict` / `close` all exercised.
 
-Not yet in this release: screenshots, downloads, cookie persistence, multi-session
-isolation, CAPTCHA handling.
+Not yet in this release: nothing claimed beyond the list above. Known rough edges:
+`rightbar_scrape` field extraction returns empty values on some pages.
 
 ## License
 
@@ -77,14 +118,55 @@ MIT
 DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browser`）。页面能正常渲染，
 但 agent 侧无法操作它——点什么、输什么都得你手动来。
 
-这个插件让那个浏览器变得可操作，提供六个工具：
+这个插件让那个浏览器变得可操作，共 35 个工具，按用途分组：
 
+**开门与导航**
 - `rightbar_open` —— 打开右推栏浏览器标签页，可带网址
 - `rightbar_navigate` —— 导航到指定网址
-- `rightbar_read` —— 读取当前页面：网址、标题、正文、以及带 `dsh-ref-N` 句柄的可交互元素清单
-- `rightbar_click` —— 按 `dsh-ref-N` 句柄或 CSS 选择器点击元素
-- `rightbar_fill` —— 按句柄或选择器往输入框填字
-- `rightbar_close` —— 关闭标签页
+- `rightbar_nav` —— 前进、后退、刷新
+- `rightbar_history` —— 查以前打开过哪些网页，本机持久化，跨会话跨重启
+- `rightbar_tabs` —— 列出、切换、关闭标签页
+
+**观察**
+- `rightbar_read` —— 读页面文本与可交互元素（元素带 `dsh-ref-N` 句柄）
+- `rightbar_a11y` —— 读无障碍树：语义角色、名称、状态。比 read 省上下文
+- `rightbar_controls` —— 列表单控件的当前值与 ref
+- `rightbar_captcha` —— 探测验证码位置与类型
+- `rightbar_info` —— 地址、标题、加载状态、滚动位置
+- `rightbar_shot` —— 截图存盘并返回路径（桌面版可用，可用 read_image 查看）
+- `rightbar_shot_full` —— 整页截图，从顶到底一张图
+- `rightbar_health` —— 查崩溃、加载、静音状况
+
+**操作**
+- `rightbar_click` —— 点击（也可给 x、y 按坐标点）
+- `rightbar_fill` —— 填文本框
+- `rightbar_type` —— 整段输入文字，像人一样逐字打进去
+- `rightbar_set_value` —— 按 ref、选择器或标签文字设值或清空
+- `rightbar_select` —— 选下拉框
+- `rightbar_check` —— 勾选复选框或单选框
+- `rightbar_key` —— 按键（Enter、Tab、方向键、Ctrl+A 等，桌面版为真实按键）
+- `rightbar_scroll` —— 滚动页面
+
+**查看与收存**
+- `rightbar_zoom` —— 内核级缩放网页内容，不是改字号
+- `rightbar_find` —— 页内查找文字
+- `rightbar_pdf` —— 把当前页导出成 PDF
+- `rightbar_style` —— 注入 CSS 调字号、隐藏浮层、换深色底
+- `rightbar_eval` —— 在页面里执行脚本取回结果
+
+**提取与下载**
+- `rightbar_scrape` —— 按选择器把列表整理成 JSON
+- `rightbar_download` —— 把文件下载到本机
+- `rightbar_content` —— 把整页导出成 markdown、html、text 或 json
+
+**登录态与收场**
+- `rightbar_cookies` —— 存或灌 Cookie
+- `rightbar_session_reset` —— 重建浏览器会话
+
+**记录与护栏**
+- `rightbar_ops` —— 查每一步操作记录（带序号）
+- `rightbar_replay` —— 重放动作，可按序号、区间或最近若干步
+- `rightbar_restrict` —— 设置动作白名单（readonly 只读取）
 
 开门与导航走官方公开 API `ctx.sidebarRight.openTab('browser', { params: { url } })`；
 读取与交互通过官方桌面版使用的同一条通道在浏览器容器内执行。
@@ -110,18 +192,21 @@ DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browse
 ## 安装
 
 ```
-dsh plugin add https://github.com/<owner>/rightbar-driver
+dsh plugin add github:Yingmoon0715/yingmoon-plugins#path:/plugins/rightbar-driver
 ```
 
 或在 DSH 内的插件市场安装。
 
 ## 当前状态
 
-首个版本。六个工具已在 DSH 0.2.1-rc.2 桌面版端到端验证：
-`open` 返回 `frames: 1`，`read` 返回真实页面内容，`navigate` 真实改变网址，
-`click` 真实触发跳转。
+35 个工具。已在 DSH 0.2.1-rc.2 桌面版端到端验证：`open` 返回 `frames: 1`；
+`read` 返回真实页面内容；`navigate` 真实改变加载网址；`click` 真实触发跳转；
+`shot` 与 `shot_full` 写出真实截图；`info`、`health`、`tabs`、`ops`、`zoom`、
+`wait`、`find`、`a11y`、`captcha`、`controls`、`content`、`cookies`、`restrict`、
+`close` 均已实调通过。
 
-这个版本还没有的：截图、下载、登录态持久化、多会话隔离、人机验证处理。
+未做的：不声明清单以外的能力。已知瑕疵：`rightbar_scrape` 在部分页面上
+提取到的字段值为空。
 
 ## 许可
 
