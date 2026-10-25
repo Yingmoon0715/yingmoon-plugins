@@ -8,7 +8,7 @@ The DSH right sidebar ships a browser tab (Ctrl+T, the official `ui-sidebar-brow
 It renders pages fine, but nothing could operate it from the agent side — you had to
 click and type by hand.
 
-This plugin makes that browser operable. 35 tools, grouped by what they do:
+This plugin makes that browser operable. 38 tools, grouped by what they do:
 
 **Open and navigate**
 - `rightbar_open` — open the sidebar browser tab, optionally with a URL
@@ -37,6 +37,12 @@ This plugin makes that browser operable. 35 tools, grouped by what they do:
 - `rightbar_key` — press keys (Enter, Tab, arrows, Ctrl+A — real key events on desktop)
 - `rightbar_scroll` — scroll the page
 
+**Frame size**
+- `rightbar_resize` — resize the browser frame. `handle` drops a drag grip on the frame's
+  bottom-right corner; a pixel width sets it directly; presets `phone`(375) / `narrow`(480) /
+  `wide`(720) / `wider`(960) switch quickly; `reset` restores the official default. Narrow
+  the frame and the page's responsive layout reflows to its mobile shape on its own.
+
 **View and keep**
 - `rightbar_zoom` — engine-level zoom, not font size
 - `rightbar_find` — find text in the page
@@ -57,6 +63,7 @@ This plugin makes that browser operable. 35 tools, grouped by what they do:
 - `rightbar_ops` — every operation with sequence, time, duration, outcome
 - `rightbar_replay` — replay actions, by sequence, range, or last N
 - `rightbar_restrict` — whitelist actions (readonly mode)
+- `rightbar_search_status` — which route the built-in web search is taking right now
 
 Opening and navigation go through the official public API
 `ctx.sidebarRight.openTab('browser', { params: { url } })`. Reading and interaction
@@ -179,7 +186,7 @@ MIT
 DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browser`）。页面能正常渲染，
 但 agent 侧无法操作它——点什么、输什么都得你手动来。
 
-这个插件让那个浏览器变得可操作，共 35 个工具，按用途分组：
+这个插件让那个浏览器变得可操作，共 38 个工具，按用途分组：
 
 **开门与导航**
 - `rightbar_open` —— 打开右推栏浏览器标签页，可带网址
@@ -208,6 +215,11 @@ DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browse
 - `rightbar_key` —— 按键（Enter、Tab、方向键、Ctrl+A 等，桌面版为真实按键）
 - `rightbar_scroll` —— 滚动页面
 
+**框体大小**
+- `rightbar_resize` —— 调节网页框大小。`handle` 在框右下角放一个拖动把手，拖动即改宽度；
+  传像素数直接设宽；档位 `phone`(375) / `narrow`(480) / `wide`(720) / `wider`(960) 快速切换；
+  `reset` 恢复官方默认。框一窄，网页的响应式布局自己就重排成手机端样子。
+
 **查看与收存**
 - `rightbar_zoom` —— 内核级缩放网页内容，不是改字号
 - `rightbar_find` —— 页内查找文字
@@ -228,6 +240,7 @@ DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browse
 - `rightbar_ops` —— 查每一步操作记录（带序号）
 - `rightbar_replay` —— 重放动作，可按序号、区间或最近若干步
 - `rightbar_restrict` —— 设置动作白名单（readonly 只读取）
+- `rightbar_search_status` —— 查内置联网搜索当前走哪条路
 
 开门与导航走官方公开 API `ctx.sidebarRight.openTab('browser', { params: { url } })`；
 读取与交互通过官方桌面版使用的同一条通道在浏览器容器内执行。
@@ -313,11 +326,20 @@ DSH 的搜索提供方（ID 为 `moon-local`），于是 `web_search` 会走你�
 
 ## 当前状态
 
-35 个工具。已在 DSH 0.2.1-rc.2 桌面版端到端验证：`open` 返回 `frames: 1`；
+38 个工具。已在 DSH 0.2.1-rc.2 桌面版端到端验证：`open` 返回 `frames: 1`；
 `read` 返回真实页面内容；`navigate` 真实改变加载网址；`click` 真实触发跳转；
 `shot` 与 `shot_full` 写出真实截图；`info`、`health`、`tabs`、`ops`、`zoom`、
 `wait`、`find`、`a11y`、`captcha`、`controls`、`content`、`cookies`、`restrict`、
 `close` 均已实调通过。
+
+`resize` 的实测数据：拖动把手贴框右下角（右下缝隙均为 0）；设宽 600 后框由 745
+变为 600；模拟鼠标右移 120 像素，框宽增加 120；`reset` 回到 745 且不留内联残痕；
+档位 `phone` 375 / `narrow` 480 / `wide` 720 / `wider` 960 全部精确生效；
+非法宽度被拦下并提示可用档位。
+
+一个实现要点：官方把网页框放在一条 flex 链里（框与各级父容器都是 `flex:1 1 auto`），
+宽度由 flex 算法算出，所以只写 `width` 无效。`resize` 用 `width` + `flex:none` +
+`max-width` 三件套让框退出 flex 自适应，宽度才说得上话。
 
 搜索侧同样验过：接自建 SearXNG 时中文查询 2.5 秒返回 5 条真实结果；
 把地址指向死端口时 3 毫秒失败、随后 `available()` 转为不可用，不再拖死一轮。
