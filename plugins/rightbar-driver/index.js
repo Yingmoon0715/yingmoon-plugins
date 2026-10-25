@@ -444,9 +444,20 @@ const GITHUB_MIRRORS = [
   (u) => u.replace('https://github.com/', 'https://bgithub.xyz/'),
 ];
 
+/** raw.githubusercontent.com/user/repo/branch/path -> CDN 的 user/repo@branch/path。
+ * 注意顺序：ghfast / gh-proxy 在她本机实测 200；jsDelivr 与 Statically 在
+ * 服务器上 200，但她本机 DNS 把 Cloudflare 系解析坏了、直连 fetch failed，
+ * 所以 CDN 只能排在代理镜像后面。 */
+function rawToCdn(u, template) {
+  const m = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/.exec(u);
+  return m === null ? u : template(m[1], m[2], m[3], m[4]);
+}
+
 const RAW_MIRRORS = [
   (u) => 'https://ghfast.top/' + u,
   (u) => 'https://gh-proxy.com/' + u,
+  (u) => rawToCdn(u, (user, repo, branch, path) => `https://cdn.jsdelivr.net/gh/${user}/${repo}@${branch}/${path}`),
+  (u) => rawToCdn(u, (user, repo, branch, path) => `https://cdn.statically.io/gh/${user}/${repo}/${branch}/${path}`),
   (u) => u.replace('https://raw.githubusercontent.com/', 'https://raw.kkgithub.com/'),
 ];
 
@@ -742,6 +753,9 @@ export function apply(ctx) {
         },
       },
       framesFound: { type: 'number', description: '关闭时发现的框架数' },
+      width: { type: 'number', description: '网页框当前宽度，像素（resize 用）' },
+      height: { type: 'number', description: '网页框当前高度，像素（resize 用）' },
+      asked: { type: 'number', description: '请求设置的宽度，像素；与实际生效值不一致时说明官方容器有限制' },
       path: { type: 'string', description: '截图文件在本机的绝对路径' },
       bytes: { type: 'number', description: '截图文件字节数' },
       waited: { type: 'number', description: '等待实际耗时，毫秒' },
@@ -1025,6 +1039,22 @@ export function apply(ctx) {
     async execute(args) {
       const f = typeof args.factor === 'number' ? args.factor : 'get';
       return dispatch({ action: 'zoom', factor: f });
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'rightbar_resize',
+    description: '调节右推栏里网页框的大小。spec 传 handle 会在网页框右下角放一个拖动把手，拖动即可实时改宽度；传具体像素数（240 到 4000）直接设宽；传档位名 phone(375) / narrow(480) / wide(720) / wider(960) 快速切换；传 reset 恢复官方默认。框一变窄，网页里的响应式布局会自动重排成手机端样子，不用额外操作。改宽高是纯 DOM 操作，Web 版与桌面版都能用；只有桌面版 webview 才支持读取页面内容与内核缩放。刷新页面或重启后回到官方默认，不写死。',
+    parameters: { spec: { type: 'string', required: true, description: 'handle（放拖动把手）、reset（恢复默认）、档位名（phone/narrow/wide/wider）、或 240 到 4000 的像素数' } },
+    output: textOut((v) => {
+      if (v && v.error) return '失败: ' + v.error;
+      if (v && v.note && v.alreadyHad) return v.note;
+      if (v && v.note) return v.note + '；当前宽 ' + (v.width || '?') + ' 像素';
+      return '网页框宽度已设为 ' + (v.width || '?') + ' 像素'
+        + (v.asked && v.asked !== v.width ? '（实际生效 ' + v.width + '，官方容器可能有限制）' : '');
+    }),
+    async execute(args) {
+      return dispatch({ action: 'resize', spec: args.spec });
     },
   }));
 

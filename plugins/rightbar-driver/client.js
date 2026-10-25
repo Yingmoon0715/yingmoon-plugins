@@ -499,6 +499,158 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 网页框尺寸调节（2026-10-26 按玥玥要求做）。
+     *
+     * 官方把网页框（iframe/webview）放在一条 flex 链里：框自己是
+     * flex:1 1 auto，父容器 SB_kFW_viewport / _content / _root 也全是
+     * flex:1 1 auto，宽度由 flex 算法算出来（副本实测 745px）。
+     * 所以只写 width:600px !important 无效——flex-basis:auto 会把宽度
+     * 拉回自适应；改父容器 width 也无效，父容器同样受它的父级 flex 约束。
+     *
+     * 唯一有效的配方（副本实测，可重复）：width + flex:none + max-width。
+     * flex:none 让框退出 flex 自适应，width 才说得上话。
+     */
+    /**
+     * 框与把手的登记表。
+     * applyFrameWidth 改完宽度后要能通知把手重新定位，否则把手会留在旧位置
+     * （副本实测：设宽 600 后把手还在 x=728，跑到框外 145px）。
+     * 用 WeakMap 记，不阻止垃圾回收。
+     */
+    const handleRegistry = new WeakMap();
+
+    function applyFrameWidth(frame, w) {
+      frame.style.setProperty('width', w + 'px', 'important');
+      frame.style.setProperty('flex', 'none', 'important');
+      frame.style.setProperty('max-width', w + 'px', 'important');
+      // 改完立刻把把手挪到新右下角，别等 ResizeObserver 那一拍
+      const h = handleRegistry.get(frame);
+      if (h) {
+        const r = frame.getBoundingClientRect();
+        h.style.left = Math.round(r.right - 18) + 'px';
+        h.style.top = Math.round(r.bottom - 18) + 'px';
+      }
+    }
+
+    function clearFrameWidth(frame) {
+      frame.style.removeProperty('width');
+      frame.style.removeProperty('flex');
+      frame.style.removeProperty('max-width');
+    }
+
+    /**
+     * 挂拖动把手。
+     *
+     * 两个坑（2026-10-26 副本实测踩到）：
+     * 一、webview/iframe 不能往它内部塞 DOM，把手只能挂到父节点。但父容器
+     *    （SB_kFW_viewport）比框本身窄，用 right:0 bottom:0 挂在父节点上，
+     *    把手会落在父容器右下角而不是框的右下角——实测错位 170+ 像素。
+     *    解法：挂到父节点但用 position:fixed 加框的实时 rect 定位，
+     *    并用 ResizeObserver 让把手跟着框走。
+     * 二、onMove 用 e.movementX 在合成事件与部分输入法场景下不可靠，
+     *    改为记录 mousedown 时的起点 clientX 与起点宽度，用增量算。
+     */
+    function ensureResizeHandle(frame) {
+      if (frame.dataset.rbHandle === 'on') return false;
+      frame.dataset.rbHandle = 'on';
+      const host = frame.parentNode;
+      if (!host) return false;
+      const handle = document.createElement('div');
+      handle.dataset.rbResizeHandle = 'on';
+      handle.title = '拖动改变网页框宽度';
+      handle.style.cssText = [
+        'position:fixed', 'width:18px', 'height:18px',
+        'cursor:ew-resize', 'z-index:99999', 'opacity:0.25',
+        'background:linear-gradient(135deg,transparent 50%,currentcolor 50%)',
+        'color:#888', 'border-bottom-right-radius:4px',
+      ].join(';');
+      handle.addEventListener('mouseenter', () => { handle.style.opacity = '0.85'; });
+      handle.addEventListener('mouseleave', () => { handle.style.opacity = '0.25'; });
+
+      // 把手贴到框的右下角（fixed 定位，用框实时 rect）
+      const place = () => {
+        const r = frame.getBoundingClientRect();
+        handle.style.left = Math.round(r.right - 18) + 'px';
+        handle.style.top = Math.round(r.bottom - 18) + 'px';
+      };
+      place();
+      // 框尺寸一变就把把手挪过去；rAF 节流，别和拖动抢
+      let raf = 0;
+      const follow = () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => { raf = 0; place(); });
+      };
+      if (typeof ResizeObserver === 'function') {
+        try { new ResizeObserver(follow).observe(frame); } catch { /* 不支持就靠轮询 */ }
+      }
+      window.addEventListener('resize', follow);
+      // 官方布局变化时也跟一次（短窗轮询，够用且不常驻）
+      const followTimer = setInterval(place, 1000);
+      handle.dataset.rbFollowTimer = String(followTimer);
+
+      let startX = 0;
+      let startW = 0;
+      const onMove = (e) => {
+        const next = Math.max(240, Math.round(startW + (e.clientX - startX)));
+        applyFrameWidth(frame, next);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        document.body.style.userSelect = '';
+      };
+      handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const r = frame.getBoundingClientRect();
+        startX = e.clientX;
+        startW = Math.round(r.width);
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+      host.appendChild(handle);
+      // 登记，让 applyFrameWidth 改完宽度能立刻把把手挪过来
+      handleRegistry.set(frame, handle);
+      return true;
+    }
+
+    function resizeFrame(spec) {
+      const picked = lastFrame();
+      if (picked.error) return Promise.resolve(picked);
+      const frame = picked.frame;
+      // 改宽高是纯 DOM/CSS 操作，iframe 与 webview 都支持：
+      // 同源策略只禁止读 iframe 的内容，不禁止改这个元素自身的盒模型。
+      try {
+        if (spec === 'handle') {
+          const made = ensureResizeHandle(frame);
+          const rect = frame.getBoundingClientRect();
+          return Promise.resolve({
+            ok: true,
+            note: made ? '拖动把手已放好，拖网页框右下角即可改宽度' : '拖动把手本来就在，直接拖右下角',
+            width: Math.round(rect.width), height: Math.round(rect.height),
+            alreadyHad: !made,
+          });
+        }
+        const PRESETS = { phone: 375, narrow: 480, wide: 720, wider: 960 };
+        if (spec === 'reset' || spec === 'default') {
+          clearFrameWidth(frame);
+          const rect = frame.getBoundingClientRect();
+          return Promise.resolve({ ok: true, note: '已恢复官方默认宽度', width: Math.round(rect.width) });
+        }
+        const w = PRESETS[spec] !== undefined ? PRESETS[spec] : Number(spec);
+        if (!Number.isFinite(w) || w < 240 || w > 4000) {
+          return Promise.resolve({
+            error: '宽度要在 240 到 4000 像素之间；也可用档位名：' + Object.keys(PRESETS).join('、'),
+          });
+        }
+        applyFrameWidth(frame, w);
+        const rect = frame.getBoundingClientRect();
+        return Promise.resolve({ ok: true, width: Math.round(rect.width), asked: w });
+      } catch (e) {
+        return Promise.resolve({ error: '改尺寸失败: ' + String(e && e.message) });
+      }
+    }
+
+    /**
      * 页内查找。
      * 走 webview 原生 findInPage，等同于浏览器 Ctrl+F：
      * 会高亮命中项并滚动到第一处。命中数量通过 found-in-page 事件回传，
@@ -1504,6 +1656,7 @@ window.__ModuleLoader__.load({
                 case 'eval': value = await evalInFrame(cmd.script); break;
                 case 'info': value = await pageInfo(); break;
                 case 'zoom': value = await zoomFrame(cmd.factor); break;
+                case 'resize': value = await resizeFrame(cmd.spec); break;
                 case 'find': value = await findInFrame(cmd.text, cmd.forward); break;
                 case 'pdf': value = await pdfFrame(); break;
                 case 'style': value = await styleFrame(cmd.css, cmd.key); break;
