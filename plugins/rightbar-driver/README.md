@@ -188,7 +188,23 @@ present and unchanged. CSS class hashes differ between the asar build and the np
 package (`bZwPEG_*` vs `SB_kFW_*`), but this plugin never references official class
 names — only tag names, that data attribute, and public APIs.
 
-`resize` measured on the clone (direct calls to the real functions plus the full chain):
+`resize` measured on the clone (direct calls to the real functions plus the full
+chain). The frame itself was measured directly, and the page inside was measured by
+the page itself: a test page reports its own `window.innerWidth` and which media query
+matched back to the parent via `postMessage`. Screenshots are unavailable on the Web
+build — `rightbar_shot` states plainly that an iframe has no capture interface — so
+this is harder evidence than a picture anyway: the numbers come from the page.
+
+  frame 745 (default) -> page viewport 745 -> desktop layout
+  frame 375 / 480 / 600 -> page viewport 375 / 480 / 600 -> mobile layout
+      (media query max-width:600px matched)
+  frame 720 / 960 / 1200 -> same -> desktop layout
+  reset -> page viewport 745 -> desktop layout
+
+Frame width and page viewport match pixel for pixel at every step, with 600 as the
+boundary. What this means in practice: drag the frame below 600 and the page shows
+its mobile layout; drag it wider and it goes back to desktop. That reflow is the
+point of the feature, and it is measured, not assumed.
 the drag grip sits flush with the frame's bottom-right corner, gap 0 on both edges;
 setting width 600 moves the frame from 745 to 600; a simulated 120 px mouse move widens
 the frame by 120; `reset` returns to 745 leaving no inline residue; presets
