@@ -1058,8 +1058,8 @@ export function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'rightbar_resize',
-    description: '调节右推栏里网页框的大小。spec 传 handle 会在网页框右下角放一个拖动把手，拖动即可实时改宽度；传具体像素数（240 到 4000）直接设宽；传档位名 phone(375) / narrow(480) / wide(720) / wider(960) 快速切换；传 reset 恢复官方默认。框一变窄，网页里的响应式布局会自动重排成手机端样子，不用额外操作。改宽高是纯 DOM 操作，Web 版与桌面版都能用；只有桌面版 webview 才支持读取页面内容与内核缩放。刷新页面或重启后回到官方默认，不写死。',
-    parameters: { spec: { type: 'string', required: true, description: 'handle（放拖动把手）、reset（恢复默认）、档位名（phone/narrow/wide/wider）、或 240 到 4000 的像素数' } },
+    description: '调节右推栏里网页框的大小。spec 传 handle 会在网页框右下角放一个拖动把手，左右拖动都能实时改宽度；传像素数直接设宽；传 phone(375)/narrow(480)/wide(720)/wider(960) 快速切换；传 reset 恢复默认。可传 240 到 4000，但生效上限是容器当前可用宽度，超出会被夹紧——返回值的 width 是实际生效值、asked 是请求值，两者不一致即被夹。改动不持久，刷新或重启后回到官方默认。',
+    parameters: { spec: { type: 'string', required: true, description: 'handle（放拖动把手，之后左右拖动都能改宽度）、reset（恢复默认）、档位名（phone/narrow/wide/wider）、或 240 到 4000 的像素数。注意 4000 是可传上限不是生效上限：生效值会被夹到容器当前可用宽度，超出时返回值的 width 小于 asked' } },
     output: textOut((v) => {
       if (v && v.error) return '失败: ' + v.error;
       if (v && v.note && v.alreadyHad) return v.note;
