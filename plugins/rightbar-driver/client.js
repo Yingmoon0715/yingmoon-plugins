@@ -518,10 +518,36 @@ window.__ModuleLoader__.load({
      */
     const handleRegistry = new WeakMap();
 
+    /**
+     * 允许的最大框宽。
+     *
+     * 为什么需要：2026-10-26 实测，视口 746px、默认框 745 正好填满。
+     * 不夹紧时把框设成 900，把手中心会到 892——超出视口 146px，
+     * elementFromPoint 在该点返回 null，把手直接抓不到，
+     * 用户再也拖不回来，只能 reset。这是"能随意拖动"里的陷阱。
+     *
+     * 上限 = 视口右边 - 框左边，即框最多长到视口右边缘，再留 2px 余量。
+     */
+    function maxFrameWidth(frame) {
+      const host = frame.parentNode;
+      const base = host || frame.ownerDocument.documentElement;
+      const hr = base.getBoundingClientRect();
+      const vw = window.innerWidth || document.documentElement.clientWidth || hr.right;
+      const room = Math.floor(vw - hr.left - 2);
+      return Math.max(240, room);
+    }
+
+    function clampWidth(frame, w) {
+      const lo = 240;
+      const hi = maxFrameWidth(frame);
+      return Math.min(hi, Math.max(lo, Math.round(w)));
+    }
+
     function applyFrameWidth(frame, w) {
-      frame.style.setProperty('width', w + 'px', 'important');
+      const target = clampWidth(frame, w);
+      frame.style.setProperty('width', target + 'px', 'important');
       frame.style.setProperty('flex', 'none', 'important');
-      frame.style.setProperty('max-width', w + 'px', 'important');
+      frame.style.setProperty('max-width', target + 'px', 'important');
       // 改完立刻把把手挪到新右下角，别等 ResizeObserver 那一拍
       const h = handleRegistry.get(frame);
       if (h) {
@@ -529,6 +555,7 @@ window.__ModuleLoader__.load({
         h.style.left = Math.round(r.right - 18) + 'px';
         h.style.top = Math.round(r.bottom - 18) + 'px';
       }
+      return target;
     }
 
     function clearFrameWidth(frame) {
@@ -589,14 +616,25 @@ window.__ModuleLoader__.load({
 
       let startX = 0;
       let startW = 0;
+      let shield = null;
       const onMove = (e) => {
-        const next = Math.max(240, Math.round(startW + (e.clientX - startX)));
+        // 夹紧到容器可用宽度：否则拖过头把手飞出视口，就再也抓不回来
+        const next = clampWidth(frame, startW + (e.clientX - startX));
         applyFrameWidth(frame, next);
       };
-      const onUp = () => {
+      const onUp = (e) => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
         document.body.style.userSelect = '';
+        // 收尾要释放捕获，否则把手会一直吞鼠标事件
+        try {
+          if (e && e.pointerId !== undefined && handle.releasePointerCapture) {
+            handle.releasePointerCapture(e.pointerId);
+          }
+        } catch { /* 已自动释放或没捕获过 */ }
+        // 撤掉拖动膜
+        if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
+        shield = null;
       };
       handle.addEventListener('mousedown', (e) => {
         e.preventDefault();
@@ -604,6 +642,34 @@ window.__ModuleLoader__.load({
         startX = e.clientX;
         startW = Math.round(r.width);
         document.body.style.userSelect = 'none';
+        // 盖一层全屏透明膜。为什么必须：向左拖窄时鼠标会移进 iframe（网页区域），
+        // mousemove 被 iframe 那个文档吃掉，挂在 window 上的监听收不到，
+        // 表现为"往左拖毫无反应"。2026-10-26 实测复现：右拖生效、左拖完全不动；
+        // 先试过 setPointerCapture，对合成事件不生效，仍被吃。
+        // 有了这层膜，鼠标从头到尾在父文档里，根本进不去 iframe。
+        shield = document.createElement('div');
+        shield.dataset.rbResizeShield = 'on';
+        shield.style.cssText = [
+          'position:fixed', 'left:0', 'top:0', 'width:100%', 'height:100%',
+          'z-index:99998', 'cursor:ew-resize', 'background:transparent',
+        ].join(';');
+        (frame.ownerDocument.body || document.body).appendChild(shield);
+        // 保险：万一 mouseup 被吞或窗口失焦，膜会永久挡住界面。
+        // 用一次性监听兜住这两种情况，确保膜一定会被撤掉。
+        const dropShield = () => {
+          if (shield && shield.parentNode) shield.parentNode.removeChild(shield);
+          shield = null;
+          window.removeEventListener('blur', dropShield);
+          document.removeEventListener('mouseleave', dropShield);
+        };
+        window.addEventListener('blur', dropShield);
+        document.addEventListener('mouseleave', dropShield);
+        // 双保险：指针捕获也带上，膜万一被别的东西盖住时还有一道
+        try {
+          if (e.pointerId !== undefined && handle.setPointerCapture) {
+            handle.setPointerCapture(e.pointerId);
+          }
+        } catch { /* 不支持就只靠膜 */ }
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
       });

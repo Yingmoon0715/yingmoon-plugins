@@ -220,6 +220,44 @@ Search side: against the self-hosted SearXNG a CJK query returned five real resu
 2.5 s; pointed at a dead port it failed in 3 ms and then reported unavailable, instead
 of stalling the whole call.
 
+## Two real defects found by dragging it for real
+
+Both of these were invisible to the earlier verification, which only set widths and
+dispatched synthetic mouse events. They only showed up when the frame was dragged
+with real mouse input in both directions, which is the thing the feature is for.
+
+**1. Dragging wider than the viewport made the handle unreachable.**
+The viewport is 746 px and the default frame is 745, so it fills the screen exactly.
+With no upper bound, asking for 900 px put the handle centre at 892 — 146 px outside
+the viewport, where `document.elementFromPoint` returns null. The user drags a little
+too far, the handle vanishes, and there is no way to drag it back except `reset`.
+Fixed by clamping to the room the container actually has
+(`viewport right - frame left - 2`), applied in one place so presets, pixel values and
+dragging all obey it.
+
+**2. Dragging left did nothing at all.**
+Moving the mouse leftwards takes it over the iframe — the web page — and the
+`mousemove` events are swallowed by that document, so a listener on `window` never
+fires. Dragging rightwards worked only because the mouse leaves the frame and stays in
+the parent document. `setPointerCapture` was tried first and measured not to help.
+The fix is a full-screen transparent shield created on mousedown: the mouse never
+enters the iframe during a drag, so the events stay in the parent document. The shield
+is removed on mouseup, and also on window blur and document mouseleave so it can never
+get stuck covering the interface.
+
+Measured after both fixes, with a real page loaded into the frame and real mouse
+events through CDP:
+
+  drag left 100      745 -> 645
+  drag right 100     645 -> 743   (clamped to the ceiling)
+  drag left 250      743 -> 493
+  drag right 400     493 -> 743   (clamped)
+  request 900        743
+  request 4000       743
+  reset              745
+
+The handle is grabbable at every step and no shield is left behind.
+
 ## Defects fixed along the way
 
 Listed rather than hidden:
