@@ -58,6 +58,7 @@ This plugin makes that browser operable. 38 tools, grouped by what they do:
 **Login state and teardown**
 - `rightbar_cookies` — save or restore cookies
 - `rightbar_session_reset` — rebuild the browser session
+- `rightbar_close` — close the browser tab
 
 **Record and guardrails**
 - `rightbar_ops` — every operation with sequence, time, duration, outcome
@@ -241,6 +242,7 @@ DSH 右推栏自带一个浏览器标签页（Ctrl+T，官方 `ui-sidebar-browse
 **登录态与收场**
 - `rightbar_cookies` —— 存或灌 Cookie
 - `rightbar_session_reset` —— 重建浏览器会话
+- `rightbar_close` —— 关闭浏览器标签页
 
 **记录与护栏**
 - `rightbar_ops` —— 查每一步操作记录（带序号）
@@ -332,16 +334,36 @@ DSH 的搜索提供方（ID 为 `moon-local`），于是 `web_search` 会走你�
 
 ## 当前状态
 
-38 个工具。已在 DSH 0.2.1-rc.2 桌面版端到端验证：`open` 返回 `frames: 1`；
-`read` 返回真实页面内容；`navigate` 真实改变加载网址；`click` 真实触发跳转；
-`shot` 与 `shot_full` 写出真实截图；`info`、`health`、`tabs`、`ops`、`zoom`、
-`wait`、`find`、`a11y`、`captcha`、`controls`、`content`、`cookies`、`restrict`、
-`close` 均已实调通过。
+38 个工具。**验证环境与边界如实说明**，不把副本实测说成桌面版实测：
 
-`resize` 的实测数据：拖动把手贴框右下角（右下缝隙均为 0）；设宽 600 后框由 745
-变为 600；模拟鼠标右移 120 像素，框宽增加 120；`reset` 回到 745 且不留内联残痕；
-档位 `phone` 375 / `narrow` 480 / `wide` 720 / `wider` 960 全部精确生效；
-非法宽度被拦下并提示可用档位。
+**在 Web 副本（`dsh web`，右推栏为 iframe）上实测通过：**
+`open` 返回 `frames: 1`、`resize` 全套、`tabs`、`info`、`health`、`ops`、`zoom`、
+`wait`、`find`、`style`、`eval`、`scrape` 的拒绝路径、以及 `history`。
+
+**在桌面版（Electron webview）上实测通过：**
+早期 6 工具版本曾在她本人的 DSH 0.2.1-rc.2 桌面版上逐个实调——`open` 返回
+`frames: 1`、`read` 返回真实页面内容（URL/标题/31 个可交互元素/多语言正文）、
+`navigate` 走 `webview.loadURL` 且网址真实改变、`click` 真实触发跳转、
+`shot` 与 `shot_full` 写出真实截图。但**那之后插件又新增了 32 个工具，
+这 38 个工具的版本尚未在桌面版上整体复验**。
+
+**Web 副本上无法验证的（浏览器同源策略，非插件缺陷）：**
+`read`、`click`、`fill`、`type`、`set_value`、`select`、`check`、`key`、
+`scrape`、`download`、`cookies`、`a11y`、`controls`、`captcha`、`pdf`、
+`content` 都要读网页容器内部，而 Web 副本的 iframe 跨域，实测返回的是明确的
+同源限制提示而不是结果。桌面版 webview 走 `executeJavaScript`，不受此限。
+
+**上真机前做过的官方前提核对**（从她本人 app.asar 的 0.2.1-rc.3 构建里逐条核出，
+非推理）：`data-sidebar-browser-frame` 属性、`createElement("webview")`、
+`host.append(element)`、`dshDesktop.protocolVersion === 1` 分支、`loadURL`、
+`dom-ready`、`openTab` 均在且未变；CSS 类名哈希在 asar 与 npm 包之间不同
+（`bZwPEG_*` 对 `SB_kFW_*`），但本插件从不引用官方类名，只依赖标签名、
+那个 data 属性和公开 API，因此不受影响。
+
+`resize` 的实测数据（副本，直接调真实函数 + 完整链路两条路）：拖动把手贴框右下角
+（右下缝隙均为 0）；设宽 600 后框由 745 变为 600；模拟鼠标右移 120 像素，框宽
+增加 120；`reset` 回到 745 且不留内联残痕；档位 `phone` 375 / `narrow` 480 /
+`wide` 720 / `wider` 960 全部精确生效；非法宽度被拦下并提示可用档位。
 
 一个实现要点：官方把网页框放在一条 flex 链里（框与各级父容器都是 `flex:1 1 auto`），
 宽度由 flex 算法算出，所以只写 `width` 无效。`resize` 用 `width` + `flex:none` +
@@ -350,8 +372,15 @@ DSH 的搜索提供方（ID 为 `moon-local`），于是 `web_search` 会走你�
 搜索侧同样验过：接自建 SearXNG 时中文查询 2.5 秒返回 5 条真实结果；
 把地址指向死端口时 3 毫秒失败、随后 `available()` 转为不可用，不再拖死一轮。
 
-未做的：不声明清单以外的能力。已知瑕疵：`rightbar_scrape` 在部分页面上
-提取到的字段值为空。
+## 修过的缺陷
+
+每一处都记在 README 里，不藏着：
+
+1. dispatch 漏 `await`，工具结果被序列化成空对象，表现为"调了没反应"。
+2. `rightbar_scrape` 在字段选择器命中条目自身时返回空值——`querySelector` 只搜
+   后代不搜自身，而「字段选择器 == 条目选择器」是最常见用法。
+3. 四个返回字段（`alreadyHad`、`x`、`y`、`box`）忘在输出 schema 里声明，
+   被官方校验静默剥掉，render 里靠它们的分支永不生效。
 
 ## 许可
 
