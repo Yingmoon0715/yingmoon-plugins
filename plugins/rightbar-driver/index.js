@@ -755,7 +755,7 @@ export function apply(ctx) {
       framesFound: { type: 'number', description: '关闭时发现的框架数' },
       width: { type: 'number', description: '网页框当前宽度，像素（resize 用）' },
       height: { type: 'number', description: '网页框当前高度，像素（resize 用）' },
-      asked: { type: 'number', description: '请求设置的宽度，像素；与实际生效值不一致时说明官方容器有限制' },
+      asked: { type: 'number', description: '请求设置的宽度，像素；若与实际生效值 width 不一致，说明请求值超出了本插件夹紧的上限（容器可用宽度，防止把手飞出视口抓不到）' },
       alreadyHad: { type: 'boolean', description: '拖动把手本来就在，未重复挂载' },
       x: { type: 'number', description: '坐标点击的实际横坐标' },
       y: { type: 'number', description: '坐标点击的实际纵坐标' },
@@ -1065,7 +1065,7 @@ export function apply(ctx) {
       if (v && v.note && v.alreadyHad) return v.note;
       if (v && v.note) return v.note + '；当前宽 ' + (v.width || '?') + ' 像素';
       return '网页框宽度已设为 ' + (v.width || '?') + ' 像素'
-        + (v.asked && v.asked !== v.width ? '（实际生效 ' + v.width + '，官方容器可能有限制）' : '');
+        + (v.asked && v.asked !== v.width ? '（实际生效 ' + v.width + '，超出容器可用宽度已夹紧——这是本插件自设的上限，防止把手飞出视口抓不到）' : '');
     }),
     async execute(args) {
       return dispatch({ action: 'resize', spec: args.spec });
