@@ -1254,7 +1254,7 @@ export function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: 'rightbar_scrape',
-    description: '结构化提取：给列表项的 CSS 选择器，再给字段映射，一次把整块列表整理成 JSON。字段选择器支持 "css" 取文字、"css@href" 取属性、"" 取整项文字。适合把搜索结果、商品列表、表格行整理成结构化数据。',
+    description: '结构化提取：给列表项的 CSS 选择器，再给字段映射，一次把整块列表整理成 JSON。字段选择器支持 "css" 取文字、"css@href" 取属性、"" 取整项文字；字段选择器与条目选择器相同时会取条目本身（例如 item=a 配 a@href 即提取页面上所有链接）。适合把搜索结果、商品列表、表格行整理成结构化数据。',
     parameters: {
       item: { type: 'string', required: true, description: '每个条目的选择器，例如 .result-item 或 table tr' },
       fields: { type: 'object', required: true, additionalProperties: true, description: '字段映射，例如 {"标题": ".title", "链接": "a@href"}' },
