@@ -168,8 +168,14 @@ Search is verified too: against the self-hosted SearXNG a CJK query returned fiv
 real results in 2.5 s; pointed at a dead port it failed in 3 ms and then reported
 unavailable, instead of stalling the whole call.
 
-Not yet in this release: nothing claimed beyond the list above. Known rough edges:
-`rightbar_scrape` field extraction returns empty values on some pages.
+Not yet in this release: nothing claimed beyond the list above.
+
+One fix worth naming: `rightbar_scrape` used to return empty field values when the field
+selector matched the item element itself (the most common shape — `item=a` with
+`a@href` to pull every link on the page). `querySelector` only searches descendants,
+never the element itself. The picker now tests the root with `matches()` first and
+falls back to descendants. Verified by isolating the pick logic against the same DOM
+both before and after the change.
 
 ## License
 

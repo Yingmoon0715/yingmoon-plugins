@@ -1179,7 +1179,16 @@ window.__ModuleLoader__.load({
           let sel = text;
           let attr = '';
           if (at > 0) { sel = text.slice(0, at); attr = text.slice(at + 1); }
-          const el = (sel === '' || sel === '.' || sel === 'self') ? root : root.querySelector(sel);
+          // 先看根节点自身是否匹配，再看后代。
+          // querySelector 只搜后代不搜自身；而「条目选择器 == 字段选择器」
+          // （例如 item='a' 配字段 'a@href'，即提取页面所有链接）是最常见用法，
+          // 漏掉自身匹配会让这种用法的字段全为空（2026-10-26 实测复现并修复）。
+          let el = null;
+          if (sel === '' || sel === '.' || sel === 'self') el = root;
+          else {
+            try { if (root.matches && root.matches(sel)) el = root; } catch { /* 选择器不合法就只走后代 */ }
+            if (el === null) el = root.querySelector(sel);
+          }
           if (el === null) return '';
           if (attr === 'href') return el.getAttribute('href') || el.href || '';
           if (attr === 'src') return el.getAttribute('src') || el.src || '';
