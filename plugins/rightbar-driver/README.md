@@ -159,24 +159,66 @@ and reports `lastVia`, `lastCount`, `lastError`, and `downUntil`.
 
 ## Status
 
-35 tools. Verified end to end on DSH 0.2.1-rc.2 desktop: `open` returns `frames: 1`,
-`read` returns real page content, `navigate` changes the loaded URL, `click`
-navigates for real, `shot` and `shot_full` write real screenshots, `info` / `health` /
-`tabs` / `ops` / `zoom` / `wait` / `find` / `a11y` / `captcha` / `controls` /
-`content` / `cookies` / `restrict` / `close` all exercised.
+38 tools. **The environment is stated honestly** rather than passing clone results off
+as desktop results.
 
-Search is verified too: against the self-hosted SearXNG a CJK query returned five
-real results in 2.5 s; pointed at a dead port it failed in 3 ms and then reported
-unavailable, instead of stalling the whole call.
+**Verified on the Web clone** (`dsh web`, sidebar browser is an `<iframe>`):
+`open` returns `frames: 1`; the whole `resize` path; `tabs`, `info`, `health`, `ops`,
+`zoom`, `wait`, `find`, `style`, `eval`; and the rejection path of `scrape` and `history`.
 
-Not yet in this release: nothing claimed beyond the list above.
+**Verified on desktop** (Electron webview): an earlier 6-tool build was exercised one by
+one on the author's own DSH 0.2.1-rc.2 desktop — `open` returned `frames: 1`, `read`
+returned real page content (URL, title, 31 interactive elements, multilingual body),
+`navigate` went through `webview.loadURL` and really changed the URL, `click` really
+navigated, `shot` and `shot_full` wrote real screenshots. **The 38-tool build has not
+been re-verified on desktop as a whole** — that is the next step once a restart is possible.
 
-One fix worth naming: `rightbar_scrape` used to return empty field values when the field
-selector matched the item element itself (the most common shape — `item=a` with
-`a@href` to pull every link on the page). `querySelector` only searches descendants,
-never the element itself. The picker now tests the root with `matches()` first and
-falls back to descendants. Verified by isolating the pick logic against the same DOM
-both before and after the change.
+**Cannot be verified on the Web clone** (browser same-origin policy, not a plugin
+defect): `read`, `click`, `fill`, `type`, `set_value`, `select`, `check`, `key`,
+`scrape`, `download`, `cookies`, `a11y`, `controls`, `captcha`, `pdf`, `content` all need
+to read inside the browser guest, and a cross-origin iframe refuses by design. Those
+calls return an explicit same-origin message rather than a result. On desktop the guest
+is a `<webview>` reached through `executeJavaScript`, which is not subject to that limit.
+
+**Official assumptions checked before shipping** — from the author's own `app.asar`
+build (0.2.1-rc.3), item by item rather than inferred: the `data-sidebar-browser-frame`
+attribute, `createElement("webview")`, `host.append(element)`, the
+`dshDesktop.protocolVersion === 1` branch, `loadURL`, `dom-ready`, and `openTab` are all
+present and unchanged. CSS class hashes differ between the asar build and the npm
+package (`bZwPEG_*` vs `SB_kFW_*`), but this plugin never references official class
+names — only tag names, that data attribute, and public APIs.
+
+`resize` measured on the clone (direct calls to the real functions plus the full chain):
+the drag grip sits flush with the frame's bottom-right corner, gap 0 on both edges;
+setting width 600 moves the frame from 745 to 600; a simulated 120 px mouse move widens
+the frame by 120; `reset` returns to 745 leaving no inline residue; presets
+`phone` 375 / `narrow` 480 / `wide` 720 / `wider` 960 all exact; an illegal width is
+rejected with the preset list.
+
+One implementation note: the official build puts the browser frame in a flex chain —
+the frame and every ancestor container are `flex:1 1 auto`, so the width comes out of
+the flex algorithm and writing `width` alone does nothing. `resize` uses
+`width` + `flex:none` + `max-width` together to take the frame out of flex sizing.
+
+Search side: against the self-hosted SearXNG a CJK query returned five real results in
+2.5 s; pointed at a dead port it failed in 3 ms and then reported unavailable, instead
+of stalling the whole call.
+
+## Defects fixed along the way
+
+Listed rather than hidden:
+
+1. A missing `await` in the dispatch turned the tool result into an empty object, which
+   looked like "called it, nothing happened".
+2. `rightbar_scrape` returned empty field values when the field selector matched the
+   item element itself — `querySelector` only searches descendants, never the element
+   itself, and "field selector == item selector" is the most common shape (`item=a`
+   with `a@href` to pull every link). The picker now tests the root with `matches()`
+   first and falls back to descendants. Verified by isolating the pick logic against
+   the same DOM before and after.
+3. Four return fields (`alreadyHad`, `x`, `y`, `box`) were missing from the output
+   schema and were silently dropped by validation, so the render branches that read
+   them never fired.
 
 ## License
 
